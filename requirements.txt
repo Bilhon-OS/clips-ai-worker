@@ -2,4 +2,11 @@ flask>=3.0
 flask-cors>=4.0
 gunicorn>=21.2
 yt-dlp[default]>=2025.1.1
+# Solver de JavaScript externo do yt-dlp. Sem ele, o download do YouTube morre com
+#   "n challenge solving failed: … Ensure you have a supported JavaScript runtime and
+#    challenge solver script distribution installed"
+# e o yt-dlp cai para "Only images are available for download".
+# O Dockerfile já instala `nodejs` — esse é o RUNTIME; isto aqui é o SCRIPT que ele executa.
+# Medido em 2026-08-07 contra o YouTube: sem este pacote, nenhum formato de vídeo/áudio resolve.
+yt-dlp-ejs>=0.8.0
 bgutil-ytdlp-pot-provider>=1.3.1
