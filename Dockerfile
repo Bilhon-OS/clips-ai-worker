@@ -7,17 +7,26 @@ RUN apt-get update && \
 # Fontes base do sistema (sempre presentes em qualquer Debian).
 # fonts-liberation fornece Liberation Sans/Mono/Serif — substitutos
 # métricamente idênticos de Arial, Helvetica, Courier, Times. Libass usa.
-# nodejs é necessário para o yt-dlp resolver o n-signature JS challenge
-# do YouTube; yt-dlp auto-detecta `node` no PATH. Sem isso, /download
-# falha com "n challenge solving failed: Some formats may be missing".
+# O yt-dlp precisa de um RUNTIME de JavaScript para resolver o n-signature challenge
+# do YouTube (sistema EJS). ⚠️ `nodejs` do Debian bookworm NÃO serve: é a v18, e o EJS
+# exige Node >= 22.0.0 — e ainda assim precisaria da flag `--js-runtimes node`.
+# Deno é o runtime PADRÃO do yt-dlp (auto-detectado, sem flag) e executa o solver com
+# permissões restritas. O nodejs fica só como utilitário geral.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         fontconfig \
         fonts-liberation \
         fonts-dejavu-core \
         fonts-noto-core \
         curl \
+        unzip \
         nodejs \
     && rm -rf /var/lib/apt/lists/*
+
+# Deno — sem ele (ou sem Node >= 22) o /download morre em "n challenge solving failed"
+# e o yt-dlp enxerga só formatos de imagem. Medido no Railway em 2026-08-07.
+ENV DENO_INSTALL=/usr/local
+RUN curl -fsSL https://deno.land/install.sh | sh -s -- --yes \
+    && deno --version
 
 # Google Fonts baixadas do github.com/google/fonts.
 # Cada curl roda isolado: se uma quebrar, as outras continuam.
