@@ -24,10 +24,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Deno — sem ele (ou sem Node >= 22) o /download morre em "n challenge solving failed"
 # e o yt-dlp enxerga só formatos de imagem. Medido no Railway em 2026-08-07.
-ARG CACHE_BUST=2026-08-08-deno
-ENV DENO_INSTALL=/usr/local
-RUN curl -fsSL https://deno.land/install.sh | sh -s -- --yes \
-    && deno --version
+#
+# ⚠️ COPY da imagem oficial, NÃO `curl | sh`: o instalador depende de rede e de unzip no meio do
+# build, e o build no Railway falhou com ele. Copiar o binário é UMA camada, determinística e sem
+# rede — e não há como "reusar cache" de um passo que não existe mais.
+COPY --from=denoland/deno:bin-2.1.4 /deno /usr/local/bin/deno
+RUN deno --version
 
 # Google Fonts baixadas do github.com/google/fonts.
 # Cada curl roda isolado: se uma quebrar, as outras continuam.
