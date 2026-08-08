@@ -311,7 +311,59 @@ def extract_audio_from_video(video_path, output_path):
 
 @app.route('/health')
 def health():
-    return jsonify({'status': 'ok'})
+    """Health que DIAGNOSTICA, não só responde 'ok'.
+
+    Este worker depende de três coisas invisíveis, e quando qualquer uma falta o sintoma que
+    aparece é um erro do YouTube — o que faz o operador procurar no lugar errado. Medido:
+      · sem Deno            → "n challenge solving failed" (parece bloqueio do YouTube)
+      · sem POT provider    → "Sign in to confirm you're not a bot" (parece IP banido)
+      · player_client=web   → o mesmo "Sign in…" (parece IP banido também)
+    Nenhum desses erros aponta para a causa. Aqui eles ficam explícitos ANTES de alguém tentar
+    baixar e concluir a coisa errada.
+    """
+    diag = {'status': 'ok'}
+
+    # 1) runtime de JS: sem ele o solver EJS não roda e só sobram formatos de imagem
+    try:
+        r = subprocess.run(['deno', '--version'], capture_output=True, text=True, timeout=10)
+        diag['deno'] = r.stdout.split('\n')[0] if r.returncode == 0 else 'AUSENTE'
+    except Exception:
+        diag['deno'] = 'AUSENTE'
+
+    # 2) o POT provider é OBRIGATÓRIO: medido em 2026-08-08, sem ele o download cai para 0/3
+    try:
+        # urllib da stdlib de propósito: `requests` não é dependência deste projeto, e adicionar
+        # um pacote só para um health check é custo permanente por conveniência de um minuto.
+        import urllib.request
+        with urllib.request.urlopen(f'{BGUTIL_POT_BASE_URL}/ping', timeout=5) as pr:
+            diag['pot_provider'] = 'ok' if pr.status == 200 else f'HTTP {pr.status}'
+    except Exception as exc:
+        diag['pot_provider'] = f'INALCANÇÁVEL ({type(exc).__name__})'
+    diag['pot_provider_url'] = BGUTIL_POT_BASE_URL
+
+    diag['player_client'] = PLAYER_CLIENT
+    diag['cookies'] = 'presente' if os.path.isfile(COOKIES_PATH) else 'ausente (normal)'
+
+    problemas = []
+    if diag['deno'] == 'AUSENTE':
+        problemas.append('Deno ausente — o download vai falhar em "n challenge solving failed".')
+    if not str(diag['pot_provider']).startswith('ok'):
+        problemas.append(
+            'POT provider inalcançável em %s — o download vai falhar em "Sign in to confirm '
+            'you\'re not a bot". Confira se o serviço bgutil está no ar e se o NOME no '
+            'BGUTIL_POT_BASE_URL bate com o nome do serviço no Railway.' % BGUTIL_POT_BASE_URL
+        )
+    if 'web' in PLAYER_CLIENT.split(',')[0]:
+        problemas.append(
+            'player_client começa por "web", o client mais vigiado pelo YouTube. '
+            'Recomendado: android,tv_embedded,ios (9/9 medido).'
+        )
+
+    if problemas:
+        diag['status'] = 'degradado'
+        diag['problemas'] = problemas
+
+    return jsonify(diag)
 
 
 @app.route('/download', methods=['POST'])
