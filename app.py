@@ -43,6 +43,13 @@ logger.info('bgutil POT provider base URL: %s', BGUTIL_POT_BASE_URL)
 # remains as defense-in-depth — both can run in parallel.
 COOKIES_PATH = os.environ.get('YTDLP_COOKIES_PATH', '/app/cookies.txt')
 
+# Cadeia de player clients do YouTube, em ordem de tentativa. Cookies são a última linha, não a
+# primeira: exigem conta descartável por cliente e expiram — decisão do dono (2026-08-08),
+# "esse lance de cookie não rola". A saída sem cookies é escolher um client que o YouTube não
+# submete ao desafio de bot em IP de datacenter.
+PLAYER_CLIENT = os.environ.get('YTDLP_PLAYER_CLIENT', 'tv,ios,web_safari,web')
+logger.info('yt-dlp player_client chain: %s', PLAYER_CLIENT)
+
 # Convenience for Railway-style deploys without shell access: if the
 # cookies file content is provided base64-encoded in YTDLP_COOKIES_BASE64,
 # decode it to COOKIES_PATH at startup. Lets the user-remixer paste the
@@ -199,7 +206,12 @@ def run_download(job_id, url, format_type):
         cmd += ['-f', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
                 '--merge-output-format', 'mp4']
 
-    cmd += ['--extractor-args', 'youtube:player_client=web']
+    # ⚠️ O client `web` é o MAIS vigiado: é nele que o YouTube dispara o "Sign in to confirm
+    # you're not a bot" contra IP de datacenter. Os clients de TV e iOS usam outra rota de
+    # autorização e costumam passar sem cookies. O yt-dlp tenta em ORDEM e fica no primeiro que
+    # resolver, então uma cadeia funciona como fallback automático.
+    # Configurável por env para dar para testar sem rebuildar a imagem (só restart).
+    cmd += ['--extractor-args', f'youtube:player_client={PLAYER_CLIENT}']
     cmd += ['--extractor-args', f'youtubepot-bgutilhttp:base_url={BGUTIL_POT_BASE_URL}']
     # ⚠️ `deno`, NÃO `node`. O `nodejs` do Debian bookworm é a **v18** e o solver EJS do yt-dlp
     # exige **>= 22** — com `node` aqui, o download morre em "n challenge solving failed" e o
