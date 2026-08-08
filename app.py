@@ -58,6 +58,25 @@ COOKIES_PATH = os.environ.get('YTDLP_COOKIES_PATH', '/app/cookies.txt')
 # ⚠️ NÃO troque para `web`: é o client mais vigiado e é nele que o YouTube dispara o desafio de bot
 # contra IP de datacenter — foi o que manteve o download quebrado (1/5) até aqui.
 PLAYER_CLIENT = os.environ.get('YTDLP_PLAYER_CLIENT', 'android,tv_embedded,ios')
+
+# Proxy de saída para o yt-dlp. É a ÚNICA coisa que ataca a causa real.
+#
+# MEDIDO 2026-08-08, na mesma hora e no mesmo worker: 9/9 vídeos → intermitente → 0/5, conforme o
+# número de downloads daquele IP subia. O bloqueio do YouTube contra IP de datacenter é
+# **CUMULATIVO**, não aleatório: quanto mais se baixa, mais ele fecha. Client, PO token, formato
+# progressivo e retry melhoram a janela, mas nenhum muda o IP — e é o IP que o YouTube conta.
+#
+# Formato: http://usuario:senha@host:porta  (proxy residencial/rotativo).
+# Sem isto, um worker de uso intenso é bloqueado em horas; com isto, cada requisição sai de um IP
+# doméstico diferente e o contador nunca acumula.
+PROXY = os.environ.get('YTDLP_PROXY', '').strip()
+if PROXY:
+    logger.info('yt-dlp usando proxy de saída (host mascarado): %s',
+                re.sub(r'://[^@]*@', '://***@', PROXY))
+else:
+    logger.warning(
+        'YTDLP_PROXY ausente — os downloads saem pelo IP do Railway. O YouTube bloqueia esse IP '
+        'de forma cumulativa; espere falhas de "not a bot" conforme o uso sobe.')
 logger.info('yt-dlp player_client chain: %s', PLAYER_CLIENT)
 
 # Convenience for Railway-style deploys without shell access: if the
@@ -240,6 +259,8 @@ def run_download(job_id, url, format_type):
     # yt-dlp só enxerga formatos de imagem, mesmo com o Deno instalado na imagem.
     # Foi exatamente isto: instalamos o Deno e continuou falhando, porque esta linha proibia usá-lo.
     cmd += ['--js-runtimes', 'deno']
+    if PROXY:
+        cmd += ['--proxy', PROXY]
 
     if os.path.isfile(COOKIES_PATH):
         cmd += ['--cookies', COOKIES_PATH]
