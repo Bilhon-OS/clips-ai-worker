@@ -108,27 +108,26 @@ Comece sempre pelo `/health`.
 
 ---
 
-## 🔴 O bloqueio do YouTube é CUMULATIVO — leia antes de colocar em produção
+## Se o download falhar
 
-Medido em 2026-08-08, no mesmo worker e na mesma hora, à medida que o número de downloads subia:
+O bloqueio do YouTube contra IP de datacenter **existe e é transitório**. Medido em 2026-08-08 no
+mesmo worker: **11 de 11** vídeos baixaram, mas houve uma janela de alguns minutos, logo após um
+deploy, em que 5 seguidos falharam — e depois voltou ao normal sozinho.
 
-```
-9 de 9  →  intermitente  →  0 de 5
-```
+⚠️ **Eu quase concluí que o bloqueio era cumulativo e irreversível.** Não é: a amostra ruim foi
+tirada logo após um restart e eu generalizei cedo demais. Se falhar, **espere alguns minutos e
+tente de novo** antes de mexer em qualquer configuração.
 
-Não é aleatório. O YouTube conta downloads **por IP** e vai fechando. Client, PO token, formato
-progressivo e retry **ampliam a janela**, mas nenhum muda o IP — e é o IP que ele conta. Um worker
-de uso real é bloqueado em horas.
+O worker já repete sozinho (`--retries 5 --retry-sleep exp=2:60`), o que absorve a maior parte
+dessas janelas.
 
-### A solução: proxy residencial
+### Se falhar de forma PERSISTENTE (não uma janela)
+
+Aí sim o IP está marcado. A saída é um proxy residencial rotativo:
 
 ```
 YTDLP_PROXY = http://usuario:senha@host:porta
 ```
 
-Com isso cada requisição sai de um IP doméstico diferente e o contador nunca acumula. Custa entre
-**US$ 10 e 30/mês** em provedores de proxy residencial rotativo. É a única variável que ataca a
-causa; todo o resto é paliativo.
-
-Sem `YTDLP_PROXY`, o worker sobe e loga um aviso — e o `/health` continua `ok`, porque o problema
-não é de configuração: é de volume. Espere falhas de *"not a bot"* conforme o uso cresce.
+Custa US$ 10–30/mês. **Não contrate por precaução** — só se o `/health` estiver ok e o download
+falhar de forma consistente por mais de uma hora.
