@@ -201,7 +201,11 @@ def run_download(job_id, url, format_type):
 
     cmd += ['--extractor-args', 'youtube:player_client=web']
     cmd += ['--extractor-args', f'youtubepot-bgutilhttp:base_url={BGUTIL_POT_BASE_URL}']
-    cmd += ['--js-runtimes', 'node']
+    # ⚠️ `deno`, NÃO `node`. O `nodejs` do Debian bookworm é a **v18** e o solver EJS do yt-dlp
+    # exige **>= 22** — com `node` aqui, o download morre em "n challenge solving failed" e o
+    # yt-dlp só enxerga formatos de imagem, mesmo com o Deno instalado na imagem.
+    # Foi exatamente isto: instalamos o Deno e continuou falhando, porque esta linha proibia usá-lo.
+    cmd += ['--js-runtimes', 'deno']
 
     if os.path.isfile(COOKIES_PATH):
         cmd += ['--cookies', COOKIES_PATH]
