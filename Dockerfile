@@ -24,6 +24,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Deno — sem ele (ou sem Node >= 22) o /download morre em "n challenge solving failed"
 # e o yt-dlp enxerga só formatos de imagem. Medido no Railway em 2026-08-07.
+ARG CACHE_BUST=2026-08-08-deno
 ENV DENO_INSTALL=/usr/local
 RUN curl -fsSL https://deno.land/install.sh | sh -s -- --yes \
     && deno --version
