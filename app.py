@@ -47,7 +47,17 @@ COOKIES_PATH = os.environ.get('YTDLP_COOKIES_PATH', '/app/cookies.txt')
 # primeira: exigem conta descartável por cliente e expiram — decisão do dono (2026-08-08),
 # "esse lance de cookie não rola". A saída sem cookies é escolher um client que o YouTube não
 # submete ao desafio de bot em IP de datacenter.
-PLAYER_CLIENT = os.environ.get('YTDLP_PLAYER_CLIENT', 'tv,ios,web_safari,web')
+# MEDIDO 2026-08-08: esta cadeia baixa **9 de 9** vídeos testados, incluindo os que falhavam com
+# `web` ("Sign in to confirm you're not a bot") e com `tv` ("This video is DRM protected" — que era
+# mensagem enganosa: o client de TV recebe faixas com DRM).
+#
+# A ordem veio do `techacademialendaria/superagentes-apiv2`, que fala InnerTube direto com esta
+# mesma cadeia (ANDROID → TVHTML5_SIMPLY_EMBEDDED_PLAYER → IOS). Vocabulário do yt-dlp:
+#   ANDROID → android · TVHTML5_SIMPLY_EMBEDDED_PLAYER → tv_embedded · IOS → ios
+#
+# ⚠️ NÃO troque para `web`: é o client mais vigiado e é nele que o YouTube dispara o desafio de bot
+# contra IP de datacenter — foi o que manteve o download quebrado (1/5) até aqui.
+PLAYER_CLIENT = os.environ.get('YTDLP_PLAYER_CLIENT', 'android,tv_embedded,ios')
 logger.info('yt-dlp player_client chain: %s', PLAYER_CLIENT)
 
 # Convenience for Railway-style deploys without shell access: if the
