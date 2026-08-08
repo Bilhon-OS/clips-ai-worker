@@ -207,13 +207,25 @@ def run_download(job_id, url, format_type):
         'yt-dlp',
         '--no-playlist',
         '--restrict-filenames',
+        # O bloqueio do YouTube contra IP de datacenter é INTERMITENTE: o mesmo vídeo baixa numa
+        # tentativa e leva "Sign in to confirm you're not a bot" na seguinte. Repetir com espera
+        # crescente converte boa parte dessas falhas em sucesso, e custa nada quando não há falha.
+        '--retries', '5',
+        '--retry-sleep', 'exp=2:60',
+        '--extractor-retries', '3',
         '-o', os.path.join(job_dir, '%(title)s.%(ext)s'),
     ]
 
     if format_type == 'audio':
         cmd += ['-x', '--audio-format', 'mp3', '--audio-quality', '0']
     else:
-        cmd += ['-f', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+        # ⚠️ PROGRESSIVO PRIMEIRO (`best[ext=mp4]`), não `bestvideo+bestaudio`.
+        # Medido 2026-08-08: no MESMO vídeo e no mesmo minuto, `mode=audio` (formato único)
+        # baixava e `mode=video` (DASH `bestvideo+bestaudio`) levava "not a bot". As faixas DASH
+        # são as mais protegidas; o arquivo progressivo do client android passa com muito mais
+        # frequência. A qualidade é menor (360-720p), mas um corte vertical para redes sociais
+        # não perde nada com isso — e vídeo que não baixa tem qualidade zero.
+        cmd += ['-f', 'best[ext=mp4]/best[ext=webm]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best',
                 '--merge-output-format', 'mp4']
 
     # ⚠️ O client `web` é o MAIS vigiado: é nele que o YouTube dispara o "Sign in to confirm
