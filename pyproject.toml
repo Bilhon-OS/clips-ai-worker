@@ -14,7 +14,7 @@ maintainers = [
     {name = "coletdjnz", email = "coletdjnz@protonmail.com"},
 ]
 description = "A feature-rich command-line audio/video downloader"
-readme = "README.md"
+readme = "README-yt-dlp.md"
 requires-python = ">=3.10"
 keywords = [
     "cli",
@@ -149,7 +149,7 @@ include = [
     "/Changelog.md",
     "/LICENSE",  # included as license
     "/pyproject.toml",  # included by default
-    "/README.md",  # included as readme
+    "/README-yt-dlp.md",  # included as readme
     "/supportedsites.md",
 ]
 artifacts = [
