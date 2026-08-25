@@ -218,10 +218,17 @@ def cleanup_old_files():
 threading.Thread(target=cleanup_old_files, daemon=True).start()
 
 
-def run_download(job_id, url, format_type):
-    job_dir = os.path.join(DOWNLOAD_DIR, job_id)
-    os.makedirs(job_dir, exist_ok=True)
+FORMATO_ALTA = (
+    'bestvideo[height>=1080][ext=mp4]+bestaudio[ext=m4a]/'
+    'bestvideo[height>=1080]+bestaudio/'
+    'bestvideo[height>=720][ext=mp4]+bestaudio[ext=m4a]/'
+    'bestvideo[height>=720]+bestaudio'
+)
+FORMATO_PROGRESSIVO = 'best[ext=mp4]/best[ext=webm]/best'
 
+
+def _cmd_download(job_dir, url, format_type, formato_video):
+    """Monta a linha de comando do yt-dlp. `formato_video` e ignorado no modo audio."""
     cmd = [
         'yt-dlp',
         '--no-playlist',
@@ -236,16 +243,21 @@ def run_download(job_id, url, format_type):
     ]
 
     if format_type == 'audio':
-        cmd += ['-x', '--audio-format', 'mp3', '--audio-quality', '0']
+        # ÁUDIO PARA TRANSCRIÇÃO, não para escutar.
+        #
+        # Era `--audio-quality 0`, ou seja LAME V0, perto de 245 kbps estéreo. Para fala isso é
+        # desperdício puro: dobra o tamanho do arquivo sem melhorar em nada o reconhecimento, e
+        # o tamanho é o que decide se a transcrição roda. Medido: a 245 kbps o arquivo passa de
+        # 100 MB em cerca de 57 minutos de vídeo.
+        #
+        # 64 kbps mono a 22,05 kHz dá 28,8 MB por hora, ou seja teto perto de 3h30 no mesmo
+        # limite. Fala humana ocupa até 8 kHz; 22,05 kHz de amostragem cobre isso com folga.
+        cmd += [
+            '-x', '--audio-format', 'mp3',
+            '--postprocessor-args', 'ffmpeg:-ac 1 -ar 22050 -b:a 64k',
+        ]
     else:
-        # ⚠️ PROGRESSIVO PRIMEIRO (`best[ext=mp4]`), não `bestvideo+bestaudio`.
-        # Medido 2026-08-08: no MESMO vídeo e no mesmo minuto, `mode=audio` (formato único)
-        # baixava e `mode=video` (DASH `bestvideo+bestaudio`) levava "not a bot". As faixas DASH
-        # são as mais protegidas; o arquivo progressivo do client android passa com muito mais
-        # frequência. A qualidade é menor (360-720p), mas um corte vertical para redes sociais
-        # não perde nada com isso — e vídeo que não baixa tem qualidade zero.
-        cmd += ['-f', 'best[ext=mp4]/best[ext=webm]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best',
-                '--merge-output-format', 'mp4']
+        cmd += ['-f', formato_video, '--merge-output-format', 'mp4']
 
     # ⚠️ O client `web` é o MAIS vigiado: é nele que o YouTube dispara o "Sign in to confirm
     # you're not a bot" contra IP de datacenter. Os clients de TV e iOS usam outra rota de
@@ -261,28 +273,82 @@ def run_download(job_id, url, format_type):
     cmd += ['--js-runtimes', 'deno']
     if PROXY:
         cmd += ['--proxy', PROXY]
-
     if os.path.isfile(COOKIES_PATH):
         cmd += ['--cookies', COOKIES_PATH]
-
     cmd.append(url)
+    return cmd
 
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-        if result.returncode != 0:
-            set_job(job_id, status='error', error=result.stderr[-500:])
-            return
 
-        files = glob.glob(os.path.join(job_dir, '*'))
-        if files:
-            set_job(job_id, status='done', filepath=files[0],
-                    filename=os.path.basename(files[0]))
+def run_download(job_id, url, format_type):
+    job_dir = os.path.join(DOWNLOAD_DIR, job_id)
+    os.makedirs(job_dir, exist_ok=True)
+
+    # RESOLUÇÃO ALTA PRIMEIRO, PROGRESSIVO COMO REDE.
+    #
+    # O comentário antigo aqui dizia que qualidade menor não custava nada porque "um corte
+    # vertical para redes sociais não perde nada com isso". Essa conclusão está errada, e é
+    # justamente ao contrário: o corte vertical é o caso em que a resolução da origem importa
+    # MAIS, porque se joga fora cerca de 68% da largura e depois se amplia o que sobrou.
+    #
+    # Medido em 2026-08-25 nos 5 vídeos que existiam em produção: TODOS 640x360. Não é exceção,
+    # é regra, porque o YouTube descontinuou o formato progressivo acima de 360p anos atrás,
+    # então `best[ext=mp4]` entrega o formato 18, que é 360p, praticamente sempre. O comentário
+    # antigo dizia "360-720p" e era otimista.
+    #
+    # A conta do estrago: de uma origem 640x360 o recorte 9:16 é 202x360, e chegar a 1080x1920
+    # exige ampliar 5,33 vezes. De uma origem 1920x1080 o mesmo recorte é 608x1080 e amplia
+    # 1,78 vezes. É a diferença entre um vídeo borrado e um vídeo nítido.
+    #
+    # O RISCO É REAL e está documentado no comentário antigo: as faixas DASH (bestvideo separado
+    # de bestaudio) são mais bloqueadas que o arquivo progressivo. Por isso não basta trocar o
+    # seletor: uma cadeia com `/` é resolvida na SELEÇÃO, e se o formato existe mas o download é
+    # recusado, o yt-dlp falha em vez de cair para a opção seguinte. A rede tem de ser uma
+    # SEGUNDA CHAMADA, e é o que está abaixo.
+    tentativas = [
+        ('alta', FORMATO_ALTA),
+        ('progressivo', FORMATO_PROGRESSIVO),
+    ] if format_type != 'audio' else [('audio', None)]
+
+    ultimo_erro = 'Nenhuma tentativa executada.'
+    for nome, formato in tentativas:
+        cmd = _cmd_download(job_dir, url, format_type, formato)
+        logger.info('Download job %s: tentativa %s', job_id, nome)
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        except subprocess.TimeoutExpired:
+            ultimo_erro = 'Download excedeu o tempo limite (5 min).'
+            logger.warning('Job %s: tentativa %s estourou o tempo', job_id, nome)
+            continue
+        except Exception as e:
+            ultimo_erro = str(e)
+            continue
+
+        if result.returncode == 0:
+            files = [f for f in glob.glob(os.path.join(job_dir, '*')) if os.path.isfile(f)]
+            if files:
+                escolhido = max(files, key=os.path.getsize)
+                logger.info(
+                    'Job %s: %s deu certo, %s (%.1f MB)',
+                    job_id, nome, os.path.basename(escolhido),
+                    os.path.getsize(escolhido) / 1048576,
+                )
+                set_job(job_id, status='done', filepath=escolhido,
+                        filename=os.path.basename(escolhido))
+                return
+            ultimo_erro = 'Nenhum arquivo gerado.'
         else:
-            set_job(job_id, status='error', error='Nenhum arquivo gerado.')
-    except subprocess.TimeoutExpired:
-        set_job(job_id, status='error', error='Download excedeu o tempo limite (5 min).')
-    except Exception as e:
-        set_job(job_id, status='error', error=str(e))
+            ultimo_erro = (result.stderr or '')[-500:]
+            logger.warning('Job %s: tentativa %s falhou (rc=%s)', job_id, nome, result.returncode)
+
+        # Limpa o que ficou pela metade antes da próxima tentativa: arquivo .part de uma
+        # tentativa abortada seria escolhido como resultado da seguinte.
+        for f in glob.glob(os.path.join(job_dir, '*')):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+
+    set_job(job_id, status='error', error=ultimo_erro)
 
 
 def extract_frames_from_video(video_path, output_dir):
@@ -328,7 +394,12 @@ def extract_audio_from_video(video_path, output_path):
     cmd = [
         'ffmpeg',
         '-i', video_path,
-        '-q:a', '0',
+        # Mesmo racional do /extract-audio: mono 64k a 22,05 kHz em vez de `-q:a 0`, que é
+        # VBR de qualidade máxima e produzia arquivo grande demais para transcrever.
+        '-vn',
+        '-ac', '1',
+        '-b:a', '64k',
+        '-ar', '22050',
         '-map', 'a',
         output_path,
         '-y',
@@ -599,8 +670,19 @@ def extract_audio():
             '-i', url,
             '-vn',
             '-acodec', 'libmp3lame',
-            '-ab', '128k',
-            '-ar', '44100',
+            # ÁUDIO PARA TRANSCRIÇÃO, não para escutar.
+            #
+            # Era 128 kbps ESTÉREO a 44,1 kHz. Para reconhecimento de fala isso é o dobro do
+            # necessário em bitrate e o dobro em canais, e o tamanho do arquivo é justamente o
+            # que decide se a transcrição roda: medido, um vídeo de 251 MB dava 63,3 MB de MP3,
+            # o que colocava o teto por volta de 1h40 de vídeo.
+            #
+            # Mono a 64 kbps e 22,05 kHz dá 28,8 MB por hora, ou seja teto perto de 3h30. Fala
+            # humana ocupa até 8 kHz, então 22,05 kHz de amostragem cobre com folga, e mono é o
+            # que todo serviço de transcrição usa internamente de qualquer forma.
+            '-ac', '1',
+            '-ab', '64k',
+            '-ar', '22050',
             '-f', 'mp3',
             'pipe:1',
         ]
