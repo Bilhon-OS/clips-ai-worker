@@ -61,6 +61,18 @@ RUN mkdir -p /usr/share/fonts/truetype/app && \
     ls -la /usr/share/fonts/truetype/app/ && \
     fc-cache -fv
 
+# Modelo do detector de rosto (YuNet), 227 KB, do repositorio oficial de modelos do OpenCV.
+#
+# ⚠️ SEM `|| echo`, ao contrario das fontes acima. Fonte que falta degrada o resultado; 
+# detector que falta significa que TODO enquadramento sai centralizado no meio do quadro, o
+# que num podcast de duas pessoas aponta a camera para o vao entre elas. Build que falha e
+# melhor que worker publicado com o detector faltando em silencio.
+RUN curl -fsSL --retry 3 --retry-delay 2 \
+      "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx" \
+      -o /app/face_detection_yunet.onnx && \
+    test -s /app/face_detection_yunet.onnx && \
+    ls -la /app/face_detection_yunet.onnx
+
 WORKDIR /app
 
 COPY requirements.txt .

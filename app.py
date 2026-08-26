@@ -1,5 +1,6 @@
 import base64
 import glob
+import cv2
 import logging
 import os
 import re
@@ -448,6 +449,21 @@ def health():
     diag['player_client'] = PLAYER_CLIENT
     diag['cookies'] = 'presente' if os.path.isfile(COOKIES_PATH) else 'ausente (normal)'
 
+    # 4) QUAL BUILD esta no ar.
+    #
+    # Sem isto, saber se o Railway ja publicou um commit exige inferir pelo comportamento.
+    # Medido em 2026-08-26: o audio da transcricao voltava em 158 kbps quando o commit no ar
+    # deveria produzir 64 kbps, e foi so por ai que se descobriu que o build era antigo, depois
+    # de horas achando que o codigo estava errado. O Railway injeta RAILWAY_GIT_COMMIT_SHA em
+    # cada deploy, entao a resposta pode ser direta.
+    sha = os.environ.get('RAILWAY_GIT_COMMIT_SHA') or ''
+    diag['commit'] = sha[:7] if sha else 'desconhecido (rodando fora do Railway?)'
+
+    # 5) o detector de rosto. O modelo e baixado no build; sem ele TODO enquadramento sai
+    # centralizado no meio do quadro, o que num podcast de duas pessoas aponta a camera para o
+    # vao entre elas. E uma falha silenciosa: o corte sai, so sai enquadrado errado.
+    diag['detector_rosto'] = 'ok' if os.path.isfile(YUNET_MODELO) else 'MODELO AUSENTE'
+
     problemas = []
     if diag['deno'] == 'AUSENTE':
         problemas.append('Deno ausente — o download vai falhar em "n challenge solving failed".')
@@ -456,6 +472,11 @@ def health():
             'POT provider inalcançável em %s — o download vai falhar em "Sign in to confirm '
             'you\'re not a bot". Confira se o serviço bgutil está no ar e se o NOME no '
             'BGUTIL_POT_BASE_URL bate com o nome do serviço no Railway.' % BGUTIL_POT_BASE_URL
+        )
+    if diag['detector_rosto'] != 'ok':
+        problemas.append(
+            'Modelo do detector de rosto ausente em %s. O rastreio vai falhar e todo corte '
+            'sai centralizado. O Dockerfile baixa esse arquivo no build.' % YUNET_MODELO
         )
     if 'web' in PLAYER_CLIENT.split(',')[0]:
         problemas.append(
@@ -533,55 +554,26 @@ def extract_frames():
         t_start = ts_list[0]
         t_end = ts_list[-1]
 
-        # Detect evenly-spaced timestamps (video-track-person always sends these)
-        use_fps = False
-        avg_delta = 1.0
-        if len(ts_list) > 1:
-            deltas = [ts_list[i + 1] - ts_list[i] for i in range(len(ts_list) - 1)]
-            avg_delta = sum(deltas) / len(deltas)
-            if avg_delta > 0 and all(abs(d - avg_delta) < 0.15 for d in deltas):
-                use_fps = True
-
+        # ⚠️ O CAMINHO RAPIDO FOI REMOVIDO.
+        #
+        # Ele ligava quando os instantes pedidos eram igualmente espacados, e nesse caso NAO
+        # buscava cada instante: fazia uma chamada de ffmpeg com o filtro `fps` e devolvia os
+        # quadros que o filtro produzisse, assumindo que o n-esimo correspondia ao n-esimo
+        # instante pedido. NAO correspondia.
+        #
+        # MEDIDO em 2026-08-26: pedindo 3,14s / 5,14s / 7,14s / 9,14s, nenhum dos quatro
+        # quadros bateu com o mesmo instante pedido isoladamente. A olho, o quadro entregue
+        # como 5,14s mostra a pessoa olhando para baixo com as maos juntas; o quadro real de
+        # 5,14s mostra ela falando com as duas maos abertas. O rastreio SEMPRE mandava
+        # instantes igualmente espacados, entao esse era o unico caminho em uso.
+        #
+        # Quem precisa de amostragem continua e rapida deve usar /track-faces, onde o tempo e
+        # DERIVADO do indice do quadro e portanto correto por construcao. Este endpoint agora
+        # sempre busca instante por instante: mais lento (medido: cerca de 0,5 s por quadro) e
+        # correto.
         try:
             with tempfile.TemporaryDirectory() as tmp_dir:
-                if use_fps:
-                    # FAST PATH: one ffmpeg call with fps filter
-                    fps_rate = 1.0 / avg_delta
-                    duration = (t_end - t_start) + avg_delta * 0.5
-                    output_pattern = os.path.join(tmp_dir, 'frame_%06d.jpg')
-                    cmd = [
-                        'ffmpeg',
-                        '-hide_banner', '-loglevel', 'error',
-                        '-ss', str(t_start),
-                        '-i', url,
-                        '-t', str(duration),
-                        '-an',
-                        '-vf', f'fps={fps_rate:.6f},scale=640:-2',
-                        '-q:v', str(qscale),
-                        '-f', 'image2',
-                        output_pattern,
-                        '-y',
-                    ]
-                    logger.info(
-                        'Extracting %d frames in ONE call (fps=%.3f, duration=%.1fs)',
-                        len(ts_list), fps_rate, duration,
-                    )
-                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
-                    if result.returncode == 0:
-                        frame_files = sorted(glob.glob(os.path.join(tmp_dir, 'frame_*.jpg')))
-                        frames_b64 = []
-                        for path in frame_files[:len(ts_list)]:
-                            with open(path, 'rb') as fh:
-                                frames_b64.append(base64.b64encode(fh.read()).decode('utf-8'))
-                        logger.info('Got %d/%d frames via single call', len(frames_b64), len(ts_list))
-                        return jsonify({'frames': frames_b64})
-                    else:
-                        logger.warning(
-                            'Single-call fps extraction failed (%s), falling back to per-frame',
-                            result.stderr[-300:],
-                        )
-
-                # FALLBACK: one ffmpeg call per timestamp
+                # Uma chamada de ffmpeg por instante. Correto e mais lento; ver a nota acima.
                 frames_b64 = []
                 for i, t in enumerate(ts_list):
                     frame_path = os.path.join(tmp_dir, f'frame_{i:06d}.jpg')
@@ -860,6 +852,161 @@ def trim():
     except Exception as exc:
         logger.exception('Sync trim failed unexpectedly')
         return jsonify({'error': str(exc)}), 500
+
+
+YUNET_MODELO = os.environ.get('YUNET_MODEL', '/app/face_detection_yunet.onnx')
+_yunet = None
+
+
+def _detector_de_rosto(largura, altura):
+    """Detector YuNet, criado uma vez e reusado.
+
+    POR QUE UM DETECTOR E NAO UM LLM. O rastreio de rosto era feito pedindo a um modelo de
+    linguagem com visao (gpt-4o-mini) a coordenada do rosto em cada quadro. Medido em producao em
+    2026-08-26, num trecho com UMA pessoa: o modelo respondeu xPct=70 em sete quadros seguidos,
+    enquanto o rosto estava entre 45 e 52. Erro de cerca de 25 pontos percentuais, sustentado, com
+    o quadro correto e com temperature 0.
+    Vinte e cinco pontos sao 160 px de 640, e a janela vertical 9:16 tem 203 px de largura: e a
+    diferenca entre enquadrar o rosto e enquadrar o ombro com o fundo.
+
+    O YuNet, nos MESMOS arquivos de quadro, achou exatamente um rosto em cada um, com confianca
+    entre 0,93 e 0,94, e devolveu 45, 47, 48, 50, 52 e 56. Modelo de 227 KB, roda em CPU em
+    milissegundos, sem chamada de API e sem cota.
+
+    O QUE O DETECTOR NAO FAZ: ele nao sabe QUEM esta falando. Acha rosto, nao locutor. Com duas
+    pessoas em quadro, a escolha e por tamanho (o maior esta mais perto da camera), que era
+    exatamente a segunda prioridade do prompt antigo. Vale a troca: o prompt afirmava saber quem
+    fala e nao acertava nem onde o rosto esta.
+    """
+    global _yunet
+    if not os.path.isfile(YUNET_MODELO):
+        raise RuntimeError(
+            'modelo do detector de rosto ausente em %s (o build deveria ter baixado)' % YUNET_MODELO
+        )
+    if _yunet is None:
+        _yunet = cv2.FaceDetectorYN.create(
+            YUNET_MODELO, '', (largura, altura),
+            score_threshold=0.6,   # abaixo disso e quase sempre textura de fundo
+            nms_threshold=0.3,
+            top_k=20,
+        )
+    _yunet.setInputSize((largura, altura))
+    return _yunet
+
+
+@app.route('/track-faces', methods=['POST'])
+def track_faces():
+    """Posicao do rosto ao longo de um trecho do video, quadro por quadro.
+
+    Uma unica passada de decodificacao e deteccao local. Devolve tempo RELATIVO ao inicio do
+    trecho, que e o que o crop do ffmpeg usa na expressao.
+
+    ⚠️ O TEMPO E DERIVADO DO INDICE DO QUADRO, nao casado contra uma lista pedida. E de proposito:
+    o /extract-frames tinha um caminho que usava o filtro `fps` e depois assumia que o n-esimo
+    quadro correspondia ao n-esimo instante pedido, e nao correspondia (medido). Aqui a taxa e
+    conhecida, entao t = indice / fps e correto por construcao.
+    """
+    data = request.get_json(silent=True) or {}
+    url = (data.get('url') or '').strip()
+    if not url:
+        return jsonify({'error': 'url is required'}), 400
+
+    try:
+        start = float(data.get('start') or 0)
+        duration = float(data.get('duration') or 0)
+        fps = float(data.get('fps') or 2)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'start, duration and fps must be numbers'}), 400
+
+    if duration <= 0:
+        return jsonify({'error': 'duration must be > 0'}), 400
+    # Teto de quadros: 2/s cobre bem fala humana, e um corte de 3 minutos daria 360 quadros.
+    # Acima de 600 o custo de memoria e de tempo deixa de valer a resolucao temporal.
+    fps = max(0.2, min(4.0, fps))
+    maximo = 600
+
+    largura_alvo = int(data.get('width') or 640)
+    largura_alvo = max(320, min(1280, largura_alvo))
+
+    t0 = time.time()
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            padrao = os.path.join(tmp, 'f_%06d.jpg')
+            cmd = [
+                'ffmpeg',
+                '-hide_banner', '-loglevel', 'error',
+                '-ss', str(start),
+                '-i', url,
+                '-t', str(duration),
+                '-an',
+                '-vf', 'fps=%.6f,scale=%d:-2' % (fps, largura_alvo),
+                '-q:v', '4',
+                '-frames:v', str(maximo),
+                '-f', 'image2',
+                padrao,
+                '-y',
+            ]
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            if r.returncode != 0:
+                logger.error('[track-faces] ffmpeg rc=%s %s', r.returncode, (r.stderr or '')[-400:])
+                return jsonify({'error': 'ffmpeg failed', 'stderr': (r.stderr or '')[-300:]}), 500
+
+            arquivos = sorted(glob.glob(os.path.join(tmp, 'f_*.jpg')))
+            if not arquivos:
+                return jsonify({'error': 'nenhum quadro extraido'}), 500
+
+            primeiro = cv2.imread(arquivos[0])
+            if primeiro is None:
+                return jsonify({'error': 'quadro ilegivel'}), 500
+            alt, larg = primeiro.shape[:2]
+            det = _detector_de_rosto(larg, alt)
+
+            amostras = []
+            com_rosto = 0
+            for i, caminho in enumerate(arquivos):
+                img = primeiro if i == 0 else cv2.imread(caminho)
+                if img is None:
+                    continue
+                hh, ww = img.shape[:2]
+                if (ww, hh) != (larg, alt):
+                    det.setInputSize((ww, hh))
+                    larg, alt = ww, hh
+                _, achados = det.detect(img)
+
+                rostos = []
+                if achados is not None:
+                    for f in achados:
+                        x, y, w, h = float(f[0]), float(f[1]), float(f[2]), float(f[3])
+                        rostos.append({
+                            'xPct': round(100.0 * (x + w / 2.0) / ww, 2),
+                            'yPct': round(100.0 * (y + h / 2.0) / hh, 2),
+                            'wPct': round(100.0 * w / ww, 2),
+                            'hPct': round(100.0 * h / hh, 2),
+                            'score': round(float(f[14]), 3),
+                        })
+                if rostos:
+                    com_rosto += 1
+                amostras.append({'t': round(i / fps, 3), 'faces': rostos})
+
+            logger.info(
+                '[track-faces] %d quadros, %d com rosto, %.1fs',
+                len(amostras), com_rosto, time.time() - t0,
+            )
+            return jsonify({
+                'fps': fps,
+                'frameWidth': ww,
+                'frameHeight': hh,
+                'samples': amostras,
+                'withFace': com_rosto,
+            })
+    except subprocess.TimeoutExpired:
+        return jsonify({'error': 'track-faces timed out'}), 500
+    except RuntimeError as e:
+        logger.error('[track-faces] %s', e)
+        return jsonify({'error': str(e)}), 503
+    except Exception as e:
+        logger.exception('[track-faces] falhou')
+        return jsonify({'error': str(e)}), 500
 
 
 if __name__ == '__main__':

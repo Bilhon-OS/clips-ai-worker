@@ -10,3 +10,13 @@ yt-dlp[default]>=2025.1.1
 # Medido em 2026-08-07 contra o YouTube: sem este pacote, nenhum formato de vídeo/áudio resolve.
 yt-dlp-ejs>=0.8.0
 bgutil-ytdlp-pot-provider>=1.3.1
+
+# Detector de rosto (YuNet, via cv2.FaceDetectorYN).
+#
+# Substitui o rastreio por LLM com visao, que errava a posicao do rosto em cerca de 25
+# pontos percentuais de forma sustentada (medido em producao em 2026-08-26: respondeu
+# xPct=70 em sete quadros seguidos num trecho em que o rosto estava entre 45 e 52).
+# O YuNet, nos mesmos quadros, acertou entre 45 e 56 com confianca de 0,93.
+#
+# headless de proposito: nao ha tela no container, e o pacote completo puxa GTK e libGL.
+opencv-python-headless>=4.10
