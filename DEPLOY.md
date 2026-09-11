@@ -68,9 +68,15 @@ O `/health` **diagnostica**, não só responde "ok":
 }
 ```
 
-⚠️ **Sem `detector_rosto` e `commit` na resposta, o build no ar é antigo.** Nesse caso o
-`/track-faces` responde 404 e todo corte é enquadrado pelo caminho de reserva, bem menos preciso.
-Faça *Redeploy* do serviço a partir do commit mais recente.
+⚠️ **Sem `detector_rosto` na resposta, o build no ar é antigo.** Nesse caso o `/track-faces`
+responde 404 e todo corte é enquadrado pelo caminho de reserva, bem menos preciso. Publique de novo
+a partir do código mais recente.
+
+O `commit` só aparece quando o serviço publica **pelo GitHub**: o Railway injeta o SHA em cada
+deploy. Serviço publicado por **upload da pasta** (`railway up`) mostra `desconhecido`, e isso é
+normal. Medido em 11/09/2026: o serviço `clips-ytdlp` do Arkom era desse segundo tipo, e por isso
+ficou dois meses com um build velho enquanto a `main` avançava. Conectar o serviço ao repositório
+resolve isso de vez.
 
 Se vier `"status": "degradado"`, o campo `problemas` diz exatamente o que fazer. Os casos:
 
