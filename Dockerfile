@@ -67,7 +67,13 @@ RUN mkdir -p /usr/share/fonts/truetype/app && \
 # detector que falta significa que TODO enquadramento sai centralizado no meio do quadro, o
 # que num podcast de duas pessoas aponta a camera para o vao entre elas. Build que falha e
 # melhor que worker publicado com o detector faltando em silencio.
-RUN curl -fsSL --retry 3 --retry-delay 2 \
+# ATENCAO: `mkdir -p /app` ANTES do curl. O `WORKDIR /app` so aparece mais abaixo, entao
+# neste ponto a pasta ainda nao existe e o curl morre com exit 23 ("client returned ERROR on
+# write"), que NAO parece erro de diretorio. Medido no primeiro build deste passo, em
+# 11/09/2026: o commit que o criou (26/08) nunca tinha sido construido, entao o defeito ficou
+# invisivel por duas semanas.
+RUN mkdir -p /app && \
+    curl -fsSL --retry 3 --retry-delay 2 \
       "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx" \
       -o /app/face_detection_yunet.onnx && \
     test -s /app/face_detection_yunet.onnx && \
