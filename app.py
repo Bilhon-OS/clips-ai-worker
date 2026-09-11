@@ -1,6 +1,5 @@
 import base64
 import glob
-import cv2
 import logging
 import os
 import re
@@ -13,6 +12,8 @@ import uuid
 
 from flask import Flask, request, jsonify, send_file, Response
 from flask_cors import CORS
+
+from rastreio import YUNET_MODELO, FalhaDeMedida, medir_trecho
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -854,57 +855,16 @@ def trim():
         return jsonify({'error': str(exc)}), 500
 
 
-YUNET_MODELO = os.environ.get('YUNET_MODEL', '/app/face_detection_yunet.onnx')
-_yunet = None
-
-
-def _detector_de_rosto(largura, altura):
-    """Detector YuNet, criado uma vez e reusado.
-
-    POR QUE UM DETECTOR E NAO UM LLM. O rastreio de rosto era feito pedindo a um modelo de
-    linguagem com visao (gpt-4o-mini) a coordenada do rosto em cada quadro. Medido em producao em
-    2026-08-26, num trecho com UMA pessoa: o modelo respondeu xPct=70 em sete quadros seguidos,
-    enquanto o rosto estava entre 45 e 52. Erro de cerca de 25 pontos percentuais, sustentado, com
-    o quadro correto e com temperature 0.
-    Vinte e cinco pontos sao 160 px de 640, e a janela vertical 9:16 tem 203 px de largura: e a
-    diferenca entre enquadrar o rosto e enquadrar o ombro com o fundo.
-
-    O YuNet, nos MESMOS arquivos de quadro, achou exatamente um rosto em cada um, com confianca
-    entre 0,93 e 0,94, e devolveu 45, 47, 48, 50, 52 e 56. Modelo de 227 KB, roda em CPU em
-    milissegundos, sem chamada de API e sem cota.
-
-    O QUE O DETECTOR NAO FAZ: ele nao sabe QUEM esta falando. Acha rosto, nao locutor. Com duas
-    pessoas em quadro, a escolha e por tamanho (o maior esta mais perto da camera), que era
-    exatamente a segunda prioridade do prompt antigo. Vale a troca: o prompt afirmava saber quem
-    fala e nao acertava nem onde o rosto esta.
-    """
-    global _yunet
-    if not os.path.isfile(YUNET_MODELO):
-        raise RuntimeError(
-            'modelo do detector de rosto ausente em %s (o build deveria ter baixado)' % YUNET_MODELO
-        )
-    if _yunet is None:
-        _yunet = cv2.FaceDetectorYN.create(
-            YUNET_MODELO, '', (largura, altura),
-            score_threshold=0.6,   # abaixo disso e quase sempre textura de fundo
-            nms_threshold=0.3,
-            top_k=20,
-        )
-    _yunet.setInputSize((largura, altura))
-    return _yunet
-
-
 @app.route('/track-faces', methods=['POST'])
 def track_faces():
-    """Posicao do rosto ao longo de um trecho do video, quadro por quadro.
+    """Rostos, atividade de boca e cortes de cena ao longo de um trecho do video.
 
-    Uma unica passada de decodificacao e deteccao local. Devolve tempo RELATIVO ao inicio do
-    trecho, que e o que o crop do ffmpeg usa na expressao.
+    A medida mora em rastreio.py (roda sem Flask, e e testada localmente contra video real). A
+    decisao de quem enquadrar mora no edge, em _shared/enquadramento.ts.
 
-    ⚠️ O TEMPO E DERIVADO DO INDICE DO QUADRO, nao casado contra uma lista pedida. E de proposito:
-    o /extract-frames tinha um caminho que usava o filtro `fps` e depois assumia que o n-esimo
-    quadro correspondia ao n-esimo instante pedido, e nao correspondia (medido). Aqui a taxa e
-    conhecida, entao t = indice / fps e correto por construcao.
+    Resposta compativel com o build anterior: `samples[].faces[]` com xPct, yPct, wPct, hPct e
+    score continuam iguais. Novos: `faces[].fala` (atividade de boca) e `cuts` (instantes de troca
+    de plano). Edge antigo ignora os dois.
     """
     data = request.get_json(silent=True) or {}
     url = (data.get('url') or '').strip()
@@ -915,93 +875,27 @@ def track_faces():
         start = float(data.get('start') or 0)
         duration = float(data.get('duration') or 0)
         fps = float(data.get('fps') or 2)
+        largura = int(data.get('width') or 640)
     except (TypeError, ValueError):
-        return jsonify({'error': 'start, duration and fps must be numbers'}), 400
+        return jsonify({'error': 'start, duration, fps and width must be numbers'}), 400
 
     if duration <= 0:
         return jsonify({'error': 'duration must be > 0'}), 400
-    # Teto de quadros: 2/s cobre bem fala humana, e um corte de 3 minutos daria 360 quadros.
-    # Acima de 600 o custo de memoria e de tempo deixa de valer a resolucao temporal.
-    fps = max(0.2, min(4.0, fps))
-    maximo = 600
 
-    largura_alvo = int(data.get('width') or 640)
-    largura_alvo = max(320, min(1280, largura_alvo))
-
-    t0 = time.time()
     try:
-        with tempfile.TemporaryDirectory() as tmp:
-            padrao = os.path.join(tmp, 'f_%06d.jpg')
-            cmd = [
-                'ffmpeg',
-                '-hide_banner', '-loglevel', 'error',
-                '-ss', str(start),
-                '-i', url,
-                '-t', str(duration),
-                '-an',
-                '-vf', 'fps=%.6f,scale=%d:-2' % (fps, largura_alvo),
-                '-q:v', '4',
-                '-frames:v', str(maximo),
-                '-f', 'image2',
-                padrao,
-                '-y',
-            ]
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-            if r.returncode != 0:
-                logger.error('[track-faces] ffmpeg rc=%s %s', r.returncode, (r.stderr or '')[-400:])
-                return jsonify({'error': 'ffmpeg failed', 'stderr': (r.stderr or '')[-300:]}), 500
-
-            arquivos = sorted(glob.glob(os.path.join(tmp, 'f_*.jpg')))
-            if not arquivos:
-                return jsonify({'error': 'nenhum quadro extraido'}), 500
-
-            primeiro = cv2.imread(arquivos[0])
-            if primeiro is None:
-                return jsonify({'error': 'quadro ilegivel'}), 500
-            alt, larg = primeiro.shape[:2]
-            det = _detector_de_rosto(larg, alt)
-
-            amostras = []
-            com_rosto = 0
-            for i, caminho in enumerate(arquivos):
-                img = primeiro if i == 0 else cv2.imread(caminho)
-                if img is None:
-                    continue
-                hh, ww = img.shape[:2]
-                if (ww, hh) != (larg, alt):
-                    det.setInputSize((ww, hh))
-                    larg, alt = ww, hh
-                _, achados = det.detect(img)
-
-                rostos = []
-                if achados is not None:
-                    for f in achados:
-                        x, y, w, h = float(f[0]), float(f[1]), float(f[2]), float(f[3])
-                        rostos.append({
-                            'xPct': round(100.0 * (x + w / 2.0) / ww, 2),
-                            'yPct': round(100.0 * (y + h / 2.0) / hh, 2),
-                            'wPct': round(100.0 * w / ww, 2),
-                            'hPct': round(100.0 * h / hh, 2),
-                            'score': round(float(f[14]), 3),
-                        })
-                if rostos:
-                    com_rosto += 1
-                amostras.append({'t': round(i / fps, 3), 'faces': rostos})
-
-            logger.info(
-                '[track-faces] %d quadros, %d com rosto, %.1fs',
-                len(amostras), com_rosto, time.time() - t0,
-            )
-            return jsonify({
-                'fps': fps,
-                'frameWidth': ww,
-                'frameHeight': hh,
-                'samples': amostras,
-                'withFace': com_rosto,
-            })
+        medida = medir_trecho(url, start, duration, fps=fps, largura=largura)
+        logger.info(
+            '[track-faces] %d quadros, %d com rosto, %d cortes de cena, %.1fs',
+            len(medida['samples']), medida['withFace'], len(medida['cuts']), medida['ms'] / 1000.0,
+        )
+        return jsonify(medida)
     except subprocess.TimeoutExpired:
         return jsonify({'error': 'track-faces timed out'}), 500
+    except FalhaDeMedida as e:
+        logger.error('[track-faces] %s', e)
+        return jsonify({'error': str(e)}), 500
     except RuntimeError as e:
+        # Modelo do detector ausente: e defeito de build, e o /health ja acusa.
         logger.error('[track-faces] %s', e)
         return jsonify({'error': str(e)}), 503
     except Exception as e:

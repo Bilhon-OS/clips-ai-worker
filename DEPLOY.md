@@ -62,14 +62,21 @@ O `/health` **diagnostica**, não só responde "ok":
   "pot_provider": "ok",
   "pot_provider_url": "http://bgutil-pot-provider.railway.internal:4416",
   "player_client": "android,tv_embedded,ios",
-  "cookies": "ausente (normal)"
+  "cookies": "ausente (normal)",
+  "detector_rosto": "ok",
+  "commit": "abc1234"
 }
 ```
 
-Se vier `"status": "degradado"`, o campo `problemas` diz exatamente o que fazer. Os três casos:
+⚠️ **Sem `detector_rosto` e `commit` na resposta, o build no ar é antigo.** Nesse caso o
+`/track-faces` responde 404 e todo corte é enquadrado pelo caminho de reserva, bem menos preciso.
+Faça *Redeploy* do serviço a partir do commit mais recente.
+
+Se vier `"status": "degradado"`, o campo `problemas` diz exatamente o que fazer. Os casos:
 
 | o que aparece | causa | conserto |
 |---|---|---|
+| `detector_rosto: MODELO AUSENTE` | build sem o modelo do detector | rebuild sem cache |
 | `deno: AUSENTE` | imagem antiga | rebuild sem cache |
 | `pot_provider: INALCANÇÁVEL` | nome errado na URL | corrija o `BGUTIL_POT_BASE_URL` (passo 3) |
 | `player_client` começa com `web` | alguém sobrescreveu | remova o `YTDLP_PLAYER_CLIENT` |
