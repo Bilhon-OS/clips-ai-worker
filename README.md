@@ -1,10 +1,15 @@
 # Worker do Arkom Clips
 
-Serviço que o **Arkom Clips** usa para trabalhar o vídeo. Ele faz três coisas:
+Serviço que o **Arkom Clips** usa para trabalhar o vídeo. Ele faz quatro coisas:
 
 1. **baixa** o vídeo do YouTube,
 2. **extrai o áudio** para a transcrição,
-3. **corta o clipe** queimando a legenda estilizada no quadro.
+3. **mede o trecho** para o enquadramento automático: onde estão os rostos, quem está mexendo a
+   boca e onde a câmera troca de plano (`POST /track-faces`, código em `rastreio.py`),
+4. **corta o clipe** queimando a legenda estilizada no quadro.
+
+O worker só **mede**. Quem decide quem enquadrar, quando cortar e quando encaixar o quadro inteiro é
+o Arkom Clips (`supabase/functions/_shared/enquadramento.ts`, com teste).
 
 Ele roda na **sua** conta Railway, não na nossa.
 

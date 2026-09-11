@@ -79,6 +79,9 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app.py .
+# rastreio.py mede rostos, atividade de boca e cortes de cena. Sem esta linha o app.py nao sobe
+# (ImportError), entao a falha aparece no deploy e nao no primeiro corte.
+COPY rastreio.py .
 COPY start.py .
 COPY templates/ templates/
 
