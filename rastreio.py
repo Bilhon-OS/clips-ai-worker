@@ -22,6 +22,7 @@ amostras, o que localiza o corte com a precisao da amostragem. Por esse interval
 mostrava o plano novo com o enquadramento do anterior.
 """
 import glob
+import logging
 import os
 import re
 import subprocess
@@ -31,6 +32,11 @@ import time
 
 import cv2
 import numpy as np
+
+# Logger PROPRIO do modulo. O app.py tem o dele, mas este arquivo roda tambem fora do Flask (a
+# bancada local o importa direto), e usar um nome que so existe la dentro trocava a mensagem do
+# ffmpeg por um `NameError` justamente no caminho de erro, que e onde a mensagem importa.
+logger = logging.getLogger(__name__)
 
 YUNET_MODELO = os.environ.get('YUNET_MODEL', '/app/face_detection_yunet.onnx')
 
