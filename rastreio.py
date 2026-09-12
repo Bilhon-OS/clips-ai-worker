@@ -157,12 +157,38 @@ def medir_trecho(url, inicio, duracao, fps=5.0, largura=640, limiar_cena=LIMIAR_
             '-q:v', '4', '-frames:v', str(MAXIMO_QUADROS),
             '-f', 'image2', 'f_%06d.jpg', '-y',
         ]
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=300, cwd=tmp)
-        if r.returncode != 0:
-            raise FalhaDeMedida('ffmpeg rc=%s %s' % (r.returncode, (r.stderr or '')[-300:]))
-
-        arquivos = sorted(glob.glob(os.path.join(tmp, 'f_*.jpg')))
-        if not arquivos:
+        # UMA segunda tentativa quando nao veio quadro nenhum.
+        #
+        # POR QUE. Lendo o video por URL assinada, uma falha passageira de rede deixa o ffmpeg sem
+        # decodificar nada, e o erro que sai e `-22 (Invalid argument)` do encoder mjpeg, que nao
+        # parece erro de leitura. Medido em producao em 2026-09-11: de cinco cortes do mesmo video,
+        # quatro mediram e um falhou assim. O preco desse tropeco e alto, porque quem chama
+        # entende "worker sem detector" e cai no caminho de visao: aquele corte ficou com 48
+        # pontos num plano so, ou seja, sem nenhum corte de camera.
+        #
+        # Duas tentativas, e nao cinco: se a segunda tambem nao traz quadro, o problema nao e
+        # passageiro (trecho fora do arquivo, URL expirada, video ilegivel) e insistir so atrasa.
+        arquivos: list[str] = []
+        for tentativa in (1, 2):
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=300, cwd=tmp)
+            arquivos = sorted(glob.glob(os.path.join(tmp, 'f_*.jpg')))
+            if r.returncode == 0 and arquivos:
+                break
+            if tentativa == 1:
+                logger.warning(
+                    '[track-faces] tentativa 1 sem quadro (rc=%s): %s. Repetindo uma vez.',
+                    r.returncode, (r.stderr or '')[-200:],
+                )
+                for f in arquivos:
+                    try:
+                        os.remove(f)
+                    except OSError:
+                        pass
+                arquivos = []
+                time.sleep(1.0)
+                continue
+            if r.returncode != 0:
+                raise FalhaDeMedida('ffmpeg rc=%s %s' % (r.returncode, (r.stderr or '')[-300:]))
             raise FalhaDeMedida('nenhum quadro extraido')
         cortes = [c for c in _ler_cortes(os.path.join(tmp, 'cenas.txt')) if 0.05 < c < duracao - 0.05]
 
